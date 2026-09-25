@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SHREE BALAJI ASSOCIATES — Tracker</title>
+<meta name="description" content="Sales, Purchase, Stock & Financial Year Tracker for Shree Balaji Associates." />
+<meta property="og:title" content="SHREE BALAJI ASSOCIATES — Tracker" />
+<meta property="og:description" content="Sales, Purchase, Stock & Financial Year Tracker for Shree Balaji Associates." />
+<meta property="og:type" content="website" />
+<link rel="stylesheet" href="/static/css/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<div class="modal-overlay" id="loginOverlay" style="display:flex;">
+  <div class="modal-box">
+    <div class="letterhead" style="border:none;margin-bottom:10px;padding-bottom:0;">
+      <div class="cname">SHREE BALAJI ASSOCIATES</div>
+    </div>
+    <h3>🔒 Sign in</h3>
+    <div class="field"><label>Financial year</label>
+      <select id="loginFy"><option value="">Loading…</option></select>
+    </div>
+    <div class="field"><label>User ID</label><input type="text" id="loginUser" autocomplete="username" placeholder="User ID"></div>
+    <div class="field"><label>Password</label><input type="password" id="loginPass" autocomplete="current-password" placeholder="Password"></div>
+    <div id="loginError" style="color:var(--red);font-size:12px;margin-top:6px;display:none;">Invalid User ID or password.</div>
+    <button class="btn-add" style="margin-top:10px;" onclick="attemptLogin()">Sign In</button>
+  </div>
+</div>
+
+
+<div class="modal-overlay" id="fyModal" style="display:none;" onclick="if(event.target===this)closeFyModal()">
+  <div class="modal-box" style="max-width:380px;">
+    <h3>📅 Financial year</h3>
+    <div class="field">
+      <label>Working year</label>
+      <select id="activeFySelect" onchange="switchFinancialYear(this.value)"></select>
+    </div>
+    <div class="small" id="fyRangeHint" style="margin-top:-4px;margin-bottom:10px;color:var(--muted);"></div>
+    <div class="admin-only" id="fyAdminSection">
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
+        <b style="font-size:13px;">Create new year</b>
+        <div class="small">Closing cash, bank &amp; stock from the source year become openings. Operator day-window still applies.</div>
+        <div class="field" style="margin-top:8px;"><label>New FY (e.g. 2026-27)</label>
+          <input type="text" id="newFyLabel" placeholder="2026-27" autocomplete="off"></div>
+        <div class="field"><label>Copy / carry from</label>
+          <select id="newFyCopyFrom"></select></div>
+        <button class="btn-add" style="background:var(--green);" onclick="createFinancialYear()">Create year DB</button>
+        <div id="fyAdminMsg" class="small" style="margin-top:6px;"></div>
+      </div>
+    </div>
+    <button class="btn-secondary" style="margin-top:12px;" onclick="closeFyModal()">Close</button>
+  </div>
+</div>
+
+<div id="appContent" style="display:none;">
+
+<header class="app-header">
+  <div class="header-main">
+    <div class="company-brand">
+      <div class="company-title-row">
+        <h1 class="cname">SHREE BALAJI ASSOCIATES</h1>
+        <span class="app-tagline">💰 Sales, Purchase &amp; Stock</span>
+        <span class="version-tag" title="Version 28">v28</span>
+      </div>
+      <div class="company-meta-row">
+        <span class="caddr">Near Om Sai Biofuels Bargawan Odgadi Distt. Singrauli</span>
+        <span class="meta-dot">·</span>
+        <span class="cgst"><b>GSTIN:</b> 23AEPFS7841N1Z9</span>
+      </div>
+    </div>
+    
+    <div class="header-controls">
+      <button class="fy-pill-btn" id="fyIconBtn" title="Financial year" onclick="openFyModal()">
+        <span>📅</span>
+        <span id="fyIconBadge">2026-27</span>
+        <span class="arrow-down">▾</span>
+      </button>
+      <button class="icon-btn admin-only" title="Backup &amp; Restore" onclick="openDataModal()">🗄️</button>
+      <button class="icon-btn admin-only" title="Reports" onclick="openReportModal()">📄</button>
+      <div class="user-pill">
+        <span class="user-icon">👤</span>
+        <span class="user-label" id="whoAmI">Admin (admin)</span>
+        <span class="pill-dot">·</span>
+        <button type="button" class="logout-btn" onclick="logout()">Log out</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="layout-left">
+    <div class="card" id="entryFormCard">
+      <div class="kind-toggle">
+        <div class="kind-btn active" id="kindSale" onclick="setKind('sale')">Sale</div>
+        <div class="kind-btn" id="kindPurchase" onclick="setKind('purchase')">Purchase</div>
+        <div class="kind-btn" id="kindProduction" onclick="setKind('production')">Production</div>
+        <div class="kind-btn" id="kindExpense" onclick="setKind('expense')">Expense</div>
+        <div class="kind-btn" id="kindAdvance" onclick="setKind('advance')">Advance</div>
+      </div>
+      <div class="field"><label>Date</label><input type="date" id="date"></div>
+      <div id="saleModeToggle" class="field" style="display:none;">
+        <label>Sale type</label>
+        <div class="paid-toggle">
+          <div class="paid-btn active-yes" id="saleBillBtn" onclick="setSaleMode('bill')">Bill (Tax Invoice)</div>
+          <div class="paid-btn" id="saleChallanBtn" onclick="setSaleMode('challan')">Challan (delivery)</div>
+        </div>
+      </div>
+      <div id="rateDecidedToggle" class="field" style="display:none;">
+        <label>Rate decided?</label>
+        <div class="paid-toggle">
+          <div class="paid-btn" id="rateYesBtn" onclick="setRateDecided(true)">Yes</div>
+          <div class="paid-btn" id="rateNoBtn" onclick="setRateDecided(false)">No — supply only</div>
+        </div>
+        <div id="rateNoHint" class="small" style="display:none;">Material supplied only. Stock will be deducted. Rate &amp; bill can be set later from the "Material Supplied" tab.</div>
+      </div>
+      <div id="purchaseModeToggle" class="field" style="display:none;">
+        <label>Purchase type</label>
+        <div class="paid-toggle">
+          <div class="paid-btn active-yes" id="purchItemizedBtn" onclick="setPurchaseMode('itemized')">Itemized (qty × rate)</div>
+          <div class="paid-btn" id="purchNonItemizedBtn" onclick="setPurchaseMode('nonitemized')">Non-itemized (amount)</div>
+        </div>
+      </div>
+      <div id="clientField" class="field" style="position:relative;">
+        <label>Client / Party</label>
+        <input type="text" id="client" placeholder="e.g. Ramesh" autocomplete="off" oninput="onClientInput()" onfocus="onClientInput()" onblur="setTimeout(hideClientSuggestions,180)" onkeydown="onSuggestKey(event,'client')">
+        <div id="clientSuggestions" class="suggest-box"></div>
+      </div>
+      <div id="vendorField" class="field" style="position:relative;">
+        <label>Vendor / Supplier</label>
+        <input type="text" id="vendor" placeholder="e.g. Gupta Coal Traders" autocomplete="off" oninput="onVendorInput()" onfocus="onVendorInput()" onblur="setTimeout(hideVendorSuggestions,180)" onkeydown="onSuggestKey(event,'vendor')">
+        <div id="vendorSuggestions" class="suggest-box"></div>
+      </div>
+      <div id="itemField" class="field" style="position:relative;">
+        <label>Item Type <span class="small" style="font-weight:normal;">— type or pick; auto-corrects similar names</span></label>
+        <input type="text" id="itemType" placeholder="e.g. Brick, Coal, Clay" autocomplete="off" oninput="onItemInput()" onfocus="onItemInput()" onblur="setTimeout(hideItemSuggestions,180)" onkeydown="onSuggestKey(event,'item')">
+        <div id="itemSuggestions" class="suggest-box"></div>
+        <div id="itemHint" class="small" style="margin-top:4px;"></div>
+      </div>
+      <div id="qtyRateField" class="grid2 field">
+        <div><label>Quantity</label><input type="number" id="qty" placeholder="0" step="0.001" oninput="recalcAmount()"></div>
+        <div id="rateField"><label>Rate (per unit)</label><input type="number" id="rate" placeholder="0.00" step="0.01" oninput="recalcAmount()"></div>
+      </div>
+      <div id="computedAmountField" class="field">
+        <label>Amount</label>
+        <input type="text" id="computedAmount" value="0.00" disabled style="font-weight:700;">
+      </div>
+      <div id="prodFields" style="display:none;">
+        <div class="grid2 field">
+          <div><label>Produced item</label><select id="prodProducedItem"></select></div>
+          <div><label>Quantity produced</label><input type="number" id="prodProducedQty" placeholder="0" step="0.001"></div>
+        </div>
+        <b class="small" style="display:block;margin-top:12px;color:var(--muted);">Raw materials consumed</b>
+        <div id="prodConsumedList"></div>
+        <button class="mini-btn" style="background:var(--green);color:#fff;margin-top:8px;padding:8px 14px;font-size:12px;" onclick="addConsumedRow()">+ Add raw material</button>
+      </div>
+      <div id="expenseTypeField" class="field" style="position:relative;">
+        <label>Expense Type</label>
+        <input type="text" id="expenseType" placeholder="e.g. Diesel, Labour, Maintenance" autocomplete="off" oninput="onExpenseInput()" onfocus="onExpenseInput()" onblur="setTimeout(hideExpenseSuggestions,180)" onkeydown="onSuggestKey(event,'expense')">
+        <div id="expenseSuggestions" class="suggest-box"></div>
+      </div>
+      <div id="amountField" class="field"><label>Amount</label><input type="number" id="amount" placeholder="0.00" step="0.01"></div>
+      <div id="paidField" class="field">
+        <label id="paidLabel">Paid?</label>
+        <div class="paid-toggle">
+          <div class="paid-btn" id="paidYes" onclick="setPaid(true)">Yes</div>
+          <div class="paid-btn" id="paidNo" onclick="setPaid(false)">No, pending</div>
+        </div>
+        <div id="paidForcedHint" class="small" style="display:none;">Payment cannot be recorded for material supplied without a rate. You can record it later when you create the bill.</div>
+      </div>
+      <div id="methodField" class="field">
+        <label id="methodLabel">Received via</label>
+        <div class="paid-toggle">
+          <div class="paid-btn" id="methodCash" onclick="setMethod('cash')">💵 Cash</div>
+          <div class="paid-btn" id="methodBank" onclick="setMethod('bank')">🏦 Bank</div>
+          <div class="paid-btn" id="methodAdvance" onclick="setMethod('advance')" style="display:none;">🪙 Advance</div>
+        </div>
+        <div id="bankAccountField" class="field" style="display:none;">
+          <label>Bank account</label>
+          <select id="bankAccountSelect"></select>
+        </div>
+        <div id="advanceBalanceHint" class="small" style="display:none;"></div>
+        <div id="splitToggleRow" style="display:none;">
+          <button type="button" id="splitToggleBtn" class="toggle-btn" onclick="toggleSplitFields()">Split this payment across cash / bank / advance?</button>
+        </div>
+        <div id="splitInputs" style="display:none;margin-top:8px;">
+          <div class="grid3">
+            <div><label>Cash</label><input type="number" id="splitCash" step="0.01" placeholder="0.00" oninput="onSplitInput()"></div>
+            <div><label>Bank</label><input type="number" id="splitBank" step="0.01" placeholder="0.00" oninput="onSplitInput()"></div>
+            <div><label>Advance</label><input type="number" id="splitAdvance" step="0.01" placeholder="0.00" oninput="onSplitInput()"></div>
+          </div>
+          <div id="splitBankAccountField" class="field" style="display:none;">
+            <label>Bank account (for the bank portion)</label>
+            <select id="splitBankAccountSelect"></select>
+          </div>
+          <div class="small" style="margin-top:4px;" id="splitTotalHint">Total: 0.00</div>
+        </div>
+      </div>
+      <div id="loadingField" class="field" style="display:none;">
+        <button type="button" id="loadingToggleBtn" class="toggle-btn" onclick="toggleLoadingFields()">Also paid loading/unloading expense?</button>
+        <div id="loadingInputs" class="grid2" style="display:none;margin-top:8px;">
+          <div><label>Amount</label><input type="number" id="loadingAmount" placeholder="0.00" step="0.01"></div>
+          <div><label>Paid via</label>
+            <select id="loadingMethod"><option value="cash">Cash</option><option value="bank">Bank</option></select>
+          </div>
+        </div>
+        <div id="loadingBankAccountField" class="field" style="display:none;">
+          <label>Loading/unloading bank account</label>
+          <select id="loadingBankAccountSelect"></select>
+        </div>
+      </div>
+      <div class="field"><label>Note (optional)</label><input type="text" id="note" placeholder="e.g. Invoice #102"></div>
+      <button class="btn-add" onclick="submitEntry()">Add Entry</button>
+    </div>
+  </div>
+
+  <div class="layout-right">
+
+    <div class="tabs-scroll-container">
+      <div class="tabs">
+        <div class="tab active" id="tabDashboard" onclick="switchTab('dashboard')">Dashboard</div>
+        <div class="tab" id="tabAll" onclick="switchTab('all')">All Entries</div>
+        <div class="tab" id="tabChallans" onclick="switchTab('challans')">Challans</div>
+        <div class="tab" id="tabMaterial" onclick="switchTab('material')">Material Supplied</div>
+        <div class="tab" id="tabStock" onclick="switchTab('stock')">Stock</div>
+        <div class="tab" id="tabSP" onclick="switchTab('sp')">S/P</div>
+        <div class="tab" id="tabProduction" onclick="switchTab('production')">Production</div>
+        <div class="tab" id="tabCB" onclick="switchTab('cb')">C/B</div>
+        <div class="tab" id="tabLedger" onclick="switchTab('ledger')">Clients</div>
+        <div class="tab" id="tabVendor" onclick="switchTab('vendor')">Vendors</div>
+        <div class="tab" id="tabPending" onclick="switchTab('pending')">Pending</div>
+        <div class="tab admin-only" id="tabUsers" onclick="switchTab('users')">Users</div>
+      </div>
+    </div>
+
+    <div class="card" id="viewDashboard">
+  <div class="grid2" style="margin-bottom:8px;">
+    <div><label>From</label><input type="date" id="dashFrom" onchange="renderDashboard()"></div>
+    <div><label>To</label><input type="date" id="dashTo" onchange="renderDashboard()"></div>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setDashRange('today')">Today</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setDashRange('yesterday')">Yesterday</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setDashRange('week')">Last 7 days</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setDashRange('month')">This month</button>
+    <button class="mini-btn" style="background:var(--muted);color:#fff;" onclick="setDashRange('all')">All time</button>
+  </div>
+  <div class="grid2" style="margin-bottom:12px;gap:8px;">
+    <div class="hero-card hero-recv"><div class="lbl">Receivable</div><div class="amt" id="heroReceivable">0</div></div>
+    <div class="hero-card hero-pay"><div class="lbl">Payable</div><div class="amt" id="heroPayable">0</div></div>
+    <div class="hero-card hero-cb"><div class="lbl">Cash + Bank</div><div class="amt" id="heroCashBank">0</div></div>
+    <div class="hero-card hero-stock"><div class="lbl">Stock Value</div><div class="amt" id="heroStock">0</div></div>
+  </div>
+  <span class="hero-head">For the period</span>
+  <div class="grid2" style="gap:8px;">
+    <div class="hero-card"><div class="lbl">Sales billed</div><div class="amt cash" id="heroSalesBilled">0</div></div>
+    <div class="hero-card"><div class="lbl">Money received</div><div class="amt bank" id="heroMoneyIn">0</div></div>
+    <div class="hero-card"><div class="lbl">Purchases billed</div><div class="amt exp" id="heroPurchBilled">0</div></div>
+    <div class="hero-card"><div class="lbl">Money paid out</div><div class="amt exp" id="heroMoneyOut">0</div></div>
+  </div>
+  <span class="hero-head">Cash &amp; Bank</span>
+  <div class="grid2" style="margin-bottom:6px;">
+    <div class="bal-card"><div class="lbl">Opening Cash</div><div class="amt" id="openCash">0</div></div>
+    <div class="bal-card"><div class="lbl">Closing Cash</div><div class="amt" id="closeCash">0</div></div>
+  </div>
+  <div class="small" style="font-weight:700;text-transform:uppercase;letter-spacing:0.4px;margin-top:12px;">Bank accounts — opening &amp; closing</div>
+  <div id="perAccountBankCards" class="grid2" style="margin-top:6px;gap:8px;"></div>
+  <div class="grid2" style="margin-top:8px;">
+    <div class="bal-card"><div class="lbl">Total Bank — Opening</div><div class="amt" id="openBank">0</div></div>
+    <div class="bal-card"><div class="lbl">Total Bank — Closing</div><div class="amt" id="closeBank">0</div></div>
+  </div>
+  <div class="cash-bank-headline" style="margin-top:8px;">
+    <div class="lbl">Cash + Bank (closing)</div>
+    <div class="amt" id="cashPlusBankClosing">0</div>
+  </div>
+  <div style="margin-top:14px;">
+    <div class="stat"><span>Billed Sales (in period)</span><span class="v cash" id="sBilledSales">0</span></div>
+    <div class="stat"><span>Sales Payments Received</span><span class="v cash" id="sCollectedSales">0</span></div>
+    <div class="stat"><span>Cash Sales Received</span><span class="v cash" id="sCashSale">0</span></div>
+    <div class="stat"><span>Bank Sales Received</span><span class="v bank" id="sBankSale">0</span></div>
+    <div class="stat"><span>Advance Received (Cash)</span><span class="v cash" id="sAdvCash">0</span></div>
+    <div class="stat"><span>Advance Received (Bank)</span><span class="v bank" id="sAdvBank">0</span></div>
+    <div class="stat"><span><b>Client Advance Available</b> <span class="small" style="font-weight:normal;">— unapplied credit / surplus</span></span><span class="v" style="color:var(--purple);" id="sClientCredit">0</span></div>
+    <div class="stat payable"><span>Billed Purchases (in period)</span><span class="v" id="sBilledPurch">0</span></div>
+    <div class="stat payable"><span>Paid for Purchases</span><span class="v" id="sPaidPurch">0</span></div>
+    <div class="stat"><span>Cash Purchases Paid</span><span class="v exp" id="sCashPurch">0</span></div>
+    <div class="stat"><span>Bank Purchases Paid</span><span class="v exp" id="sBankPurch">0</span></div>
+    <div class="stat"><span>Cash Expenses</span><span class="v exp" id="sCashExp">0</span></div>
+    <div class="stat"><span>Bank Expenses</span><span class="v exp" id="sBankExp">0</span></div>
+    <div class="stat pending"><span><b>Receivable (from clients)</b></span><span class="v" id="sPending">0</span></div>
+    <div class="stat payable"><span><b>Payable (to vendors)</b> <span class="small" style="font-weight:normal;">— net of adjustments &amp; advances</span></span><span class="v" id="sPayable">0</span></div>
+  </div>
+  <b style="font-size:14px;">Sales</b>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Client</th><th>Item</th><th>Qty</th><th>Rate</th><th>Status</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+      <tbody id="salesTableBody"></tbody>
+    </table>
+  </div>
+  <b style="font-size:14px;">Purchases</b>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Rate</th><th>Status</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+      <tbody id="purchTableBody"></tbody>
+    </table>
+  </div>
+  <b style="font-size:14px;">Expenses</b>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Method</th><th>Note</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+      <tbody id="expTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" id="viewAll" style="display:none;">
+  <b style="font-size:14px;">All Entries</b>
+  <div class="grid2" style="margin-top:8px;">
+    <div><label>From</label><input type="date" id="allFrom" onchange="resetAllEntriesPage()"></div>
+    <div><label>To</label><input type="date" id="allTo" onchange="resetAllEntriesPage()"></div>
+  </div>
+  <div class="field">
+    <label>Search party / item / note</label>
+    <input type="text" id="allSearch" placeholder="e.g. Ramesh, Coal, invoice" autocomplete="off" oninput="resetAllEntriesPage()">
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setAllRange('today')">Today</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setAllRange('week')">Last 7 days</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setAllRange('month')">This month</button>
+    <button class="mini-btn" style="background:var(--muted);color:#fff;" onclick="setAllRange('all')">All time</button>
+  </div>
+  <div id="allCountHint" class="small" style="margin-bottom:4px;"></div>
+  <div id="list" style="margin-top:8px;"></div>
+</div>
+
+<div class="card" id="viewChallans" style="display:none;">
+  <b style="font-size:14px;">📋 Pending Challans (rate decided, not yet billed)</b>
+  <div class="small" style="margin-top:4px;">Select challans for a client and create a bill that covers them.</div>
+  <div id="challansList" style="margin-top:12px;"></div>
+  <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px;">
+    <div class="grid2">
+      <div><label>Bill date</label><input type="date" id="challanBillDate"></div>
+      <div><label>Selected total</label><input type="text" id="challanSelectedTotal" value="0.00" disabled style="font-weight:700;"></div>
+    </div>
+    <button class="btn-add" style="background:var(--green);" onclick="createBillFromChallans()">Create Bill from Selected</button>
+  </div>
+</div>
+
+<div class="card" id="viewMaterial" style="display:none;">
+  <b style="font-size:14px;">📦 Material Supplied (rate not yet decided)</b>
+  <div class="small" style="margin-top:4px;">These entries deducted stock but have no rate yet. Enter rates when agreed, then create a bill.</div>
+  <div id="materialList" style="margin-top:12px;"></div>
+  <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px;">
+    <div class="grid2">
+      <div><label>Bill date</label><input type="date" id="materialBillDate"></div>
+      <div><label>Selected total (with rates)</label><input type="text" id="materialSelectedTotal" value="0.00" disabled style="font-weight:700;"></div>
+    </div>
+    <button class="btn-add" style="background:var(--green);" onclick="createBillFromMaterial()">Create Bill from Material Supplied</button>
+  </div>
+</div>
+
+<div class="card" id="viewStock" style="display:none;">
+  <b style="font-size:14px;">📦 Stock on Hand</b>
+  <div class="small" style="margin-top:4px;">Live counts — updated automatically by purchases, sales, and production.</div>
+  <div id="stockDuplicatesWarning" style="margin-top:10px;"></div>
+  <div id="stockList" style="margin-top:12px;"></div>
+  <b style="font-size:13px;display:block;margin-top:16px;">📒 Stock Book</b>
+  <div class="field">
+    <label>Filter by item</label>
+    <select id="stockBookItemFilter" onchange="renderStockBook()"><option value="all">All items</option></select>
+  </div>
+  <div class="table-wrap" style="max-height:400px;overflow-y:auto;">
+    <table>
+      <thead><tr><th>Date</th><th>Item</th><th>Description</th><th style="text-align:right;">In</th><th style="text-align:right;">Out</th><th style="text-align:right;">Balance</th><th></th></tr></thead>
+      <tbody id="stockBookBody"></tbody>
+    </table>
+  </div>
+  <div class="admin-only" style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px;">
+    <b style="font-size:13px;">Items</b>
+    <div id="itemsList" style="margin-top:8px;"></div>
+    <button class="btn-add" style="background:var(--green);" onclick="openAddItemModal()">+ Add Item</button>
+  </div>
+  <div class="admin-only" style="border-top:1px solid var(--border);padding-top:12px;margin-top:14px;">
+    <b style="font-size:13px;">Manual Adjustment</b>
+    <div class="field"><label>Item</label><select id="adjItemSelect"></select></div>
+    <div class="grid2" style="margin-top:8px;">
+      <div><label>Quantity (+ / −)</label><input type="number" id="adjItemQty" step="0.001" placeholder="e.g. 5 or -2"></div>
+      <div><label>Date</label><input type="date" id="adjItemDate"></div>
+    </div>
+    <div class="field"><label>Note</label><input type="text" id="adjItemNote" placeholder="e.g. Physical count correction"></div>
+    <button class="btn-add" onclick="submitStockAdjust()">Apply Adjustment</button>
+  </div>
+</div>
+
+
+<div class="card" id="viewSP" style="display:none;">
+  <div class="grid2" style="margin-top:0;">
+    <div><label>From</label><input type="date" id="spFrom" onchange="renderSP()"></div>
+    <div><label>To</label><input type="date" id="spTo" onchange="renderSP()"></div>
+  </div>
+  <div style="display:flex;gap:6px;margin:8px 0;flex-wrap:wrap;">
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setSPRange('today')">Today</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setSPRange('week')">Last 7 days</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setSPRange('month')">This month</button>
+    <button class="mini-btn" style="background:var(--muted);color:#fff;" onclick="setSPRange('all')">All time</button>
+  </div>
+
+  <b style="font-size:13px;display:block;margin-top:10px;">📒 Sale Book</b>
+  <div class="small" style="margin-top:2px;">Admin can delete a row (removes entry, payments &amp; stock).</div>
+  <div class="field" style="margin-top:6px;"><label>Search client / item / note</label>
+    <input type="text" id="saleBookSearch" placeholder="e.g. Ramesh, Bricks" autocomplete="off" oninput="renderSaleBook()">
+  </div>
+  <div class="grid2" style="margin:6px 0;">
+    <div class="bal-card"><div class="lbl">Rows</div><div class="amt" id="saleBookCount">0</div></div>
+    <div class="bal-card"><div class="lbl">Total billed</div><div class="amt cash" id="saleBookTotal">0</div></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Client</th><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Rate</th><th>Status</th><th style="text-align:right;">Amount</th><th style="text-align:right;">Running</th><th></th></tr></thead>
+      <tbody id="saleBookBody"></tbody>
+    </table>
+  </div>
+
+  <b style="font-size:13px;display:block;margin-top:18px;">📒 Purchase Book</b>
+  <div class="small" style="margin-top:2px;">Admin can delete a row (removes entry, payments &amp; stock).</div>
+  <div class="field" style="margin-top:6px;"><label>Search vendor / item / note</label>
+    <input type="text" id="purchBookSearch" placeholder="e.g. Gupta, Coal" autocomplete="off" oninput="renderPurchBook()">
+  </div>
+  <div class="grid2" style="margin:6px 0;">
+    <div class="bal-card"><div class="lbl">Rows</div><div class="amt" id="purchBookCount">0</div></div>
+    <div class="bal-card"><div class="lbl">Total billed</div><div class="amt exp" id="purchBookTotal">0</div></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Vendor</th><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Rate</th><th>Status</th><th style="text-align:right;">Amount</th><th style="text-align:right;">Running</th><th></th></tr></thead>
+      <tbody id="purchBookBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" id="viewProduction" style="display:none;">
+  <b style="font-size:14px;">🏭 Production Runs</b>
+  <div class="grid2" style="margin-top:8px;">
+    <div><label>From</label><input type="date" id="prodFrom" onchange="renderProduction()"></div>
+    <div><label>To</label><input type="date" id="prodTo" onchange="renderProduction()"></div>
+  </div>
+  <div id="prodList" style="margin-top:12px;"></div>
+</div>
+
+<div class="card" id="viewCB" style="display:none;">
+  <div class="grid2" style="margin-top:0;">
+    <div><label>From</label><input type="date" id="cbFrom" onchange="renderCB()"></div>
+    <div><label>To</label><input type="date" id="cbTo" onchange="renderCB()"></div>
+  </div>
+  <div style="display:flex;gap:6px;margin:8px 0;flex-wrap:wrap;">
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setCBRange('today')">Today</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setCBRange('week')">Last 7 days</button>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;" onclick="setCBRange('month')">This month</button>
+    <button class="mini-btn" style="background:var(--muted);color:#fff;" onclick="setCBRange('all')">All time</button>
+  </div>
+
+  <!-- ========== CASH SECTION ========== -->
+  <b style="font-size:13px;display:block;margin-top:10px;">💵 Cash Book</b>
+  <div class="grid2" style="margin:6px 0;">
+    <div class="bal-card"><div class="lbl">Opening Cash</div><div class="amt" id="cashOpening">0</div></div>
+    <div class="bal-card"><div class="lbl">Closing Cash</div><div class="amt" id="cashClosing">0</div></div>
+  </div>
+  <div class="admin-only" style="border:1px dashed var(--border);border-radius:10px;padding:8px;margin-bottom:8px;">
+    <b class="small" style="display:block;margin-bottom:4px;">Set opening cash balance (admin)</b>
+    <div class="grid2">
+      <div><label>Opening amount</label><input type="number" id="cashObAmount" step="0.01" placeholder="0.00"></div>
+      <div><label>As of date</label><input type="date" id="cashObDate"></div>
+    </div>
+    <button class="mini-btn" style="background:var(--accent);color:#fff;margin-top:6px;" onclick="saveOpeningCash()">Save Opening Cash</button>
+    <div class="small" style="margin-top:4px;" id="cashObHint"></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Description</th><th style="text-align:right;">In</th><th style="text-align:right;">Out</th><th style="text-align:right;">Balance</th><th></th></tr></thead>
+      <tbody id="cashBookBody"></tbody>
+    </table>
+  </div>
+
+  <!-- ========== BANK SECTION ========== -->
+  <b style="font-size:13px;display:block;margin-top:18px;">🏦 Bank Book</b>
+  <div class="field" style="margin-top:6px;">
+    <label>View account</label>
+    <select id="bankAccountFilter" onchange="onBankFilterChange()"></select>
+  </div>
+  <div class="bal-card" style="margin:8px 0;">
+    <div class="lbl" id="bankBalanceLabel">Current Bank Balance</div>
+    <div class="amt" id="bankCurrentBalance" style="font-size:18px;">0</div>
+  </div>
+  <div class="admin-only" style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:10px;">
+    <b style="font-size:12px;">Bank Accounts</b>
+    <div id="bankAccountsList" style="margin-top:6px;"></div>
+    <button class="btn-add" style="background:var(--green);" onclick="openAddAccountModal()">+ Add Bank Account</button>
+  </div>
+  <div class="admin-only" style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:10px;">
+    <b style="font-size:12px;">Opening Balance (selected account)</b>
+    <div class="grid2" style="margin-top:6px;">
+      <div><label>As of date</label><input type="date" id="obDate"></div>
+      <div><label>Amount</label><input type="number" id="obAmount" step="0.01"></div>
+    </div>
+    <button class="btn-add" onclick="saveOpeningBank()">Save Opening Balance</button>
+  </div>
+
+  <b style="font-size:12px;">Add Bank Transaction</b>
+  <div class="kind-toggle" style="margin-top:6px;flex-wrap:wrap;">
+    <div class="kind-btn active" id="btDeposit" onclick="setBankTxnType('deposit')">Deposit</div>
+    <div class="kind-btn" id="btWithdrawal" onclick="setBankTxnType('withdrawal')">Withdrawal</div>
+    <div class="kind-btn" id="btCashToBank" onclick="setBankTxnType('cash_to_bank')">Cash → Bank</div>
+    <div class="kind-btn" id="btBankToCash" onclick="setBankTxnType('bank_to_cash')">Bank → Cash</div>
+    <div class="kind-btn" id="btVendorPayment" onclick="setBankTxnType('vendor_payment')">Pay Vendor</div>
+    <div class="kind-btn" id="btClientReceipt" onclick="setBankTxnType('client_receipt')">Client Receipt</div>
+  </div>
+
+  <div id="btGeneralFields">
+    <div id="btBankAccountField" class="field">
+      <label>Into / from account</label>
+      <select id="btBankAccountSelect"></select>
+    </div>
+    <div id="btCategoryField" class="field" style="position:relative;">
+      <label>Category</label>
+      <input type="text" id="btCategory" placeholder="e.g. Bank Charges, Interest" autocomplete="off" oninput="onBankTxnCategoryInput()" onfocus="onBankTxnCategoryInput()" onblur="setTimeout(hideBankTxnSuggestions,180)" onkeydown="onSuggestKey(event,'btcat')">
+      <div id="btCategorySuggestions" class="suggest-box"></div>
+    </div>
+    <div class="grid2" style="margin-top:8px;">
+      <div><label>Amount</label><input type="number" id="btAmount" step="0.01"></div>
+      <div><label>Date</label><input type="date" id="btDate"></div>
+    </div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="btNote"></div>
+  </div>
+
+  <div id="btVendorPaymentFields" style="display:none;">
+    <div class="field">
+      <label>Vendor</label>
+      <select id="btVendorSelect" onchange="updateBtVendorHint()">
+        <option value="">— pick a vendor —</option>
+      </select>
+    </div>
+    <div class="grid2" style="margin-top:8px;">
+      <div><label>Amount</label><input type="number" id="btVendorAmount" step="0.01" oninput="updateBtVendorHint()"></div>
+      <div><label>Date</label><input type="date" id="btVendorDate"></div>
+    </div>
+    <div class="field"><label>Pay from bank account</label><select id="btVendorBankSelect"></select></div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="btVendorNote"></div>
+    <div id="btVendorBalanceHint" class="notice-amber" style="display:none;"></div>
+  </div>
+
+  <div id="btClientReceiptFields" style="display:none;">
+    <div class="field">
+      <label>Client</label>
+      <select id="btClientSelect" onchange="updateBtClientHint()">
+        <option value="">— pick a client —</option>
+      </select>
+    </div>
+    <div class="grid2" style="margin-top:8px;">
+      <div><label>Amount</label><input type="number" id="btClientAmount" step="0.01" oninput="updateBtClientHint()"></div>
+      <div><label>Date</label><input type="date" id="btClientDate"></div>
+    </div>
+    <div class="field"><label>Into bank account</label><select id="btClientBankSelect"></select></div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="btClientNote"></div>
+    <div id="btClientBalanceHint" class="notice-amber" style="display:none;"></div>
+  </div>
+
+  <button class="btn-add" onclick="submitBankTxn()">Add Transaction</button>
+
+  <b style="font-size:12px;display:block;margin-top:14px;">Bank Ledger</b>
+  <div class="table-wrap">
+    <table>
+      <thead id="bankLedgerHead"></thead>
+      <tbody id="bankLedgerBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" id="viewUsers" style="display:none;">
+  <b style="font-size:14px;">👥 Users</b>
+  <div class="small" style="margin-top:4px;">Add or remove users, change their role, and set how many days back they can enter entries.</div>
+  <div id="usersList" style="margin-top:12px;"></div>
+  <button class="btn-add" style="background:var(--green);" onclick="openAddUserModal()">+ Add User</button>
+</div>
+
+<div class="card" id="viewLedger" style="display:none;">
+  <b style="font-size:14px;" id="ledgerTitle">Client Ledger</b>
+  <input type="text" id="clientSearch" placeholder="Search client..." oninput="renderLedger()" style="margin-top:8px;">
+  <div id="ledger" style="margin-top:8px;"></div>
+</div>
+
+<div class="card" id="viewVendor" style="display:none;">
+  <b style="font-size:14px;" id="vendorTitle">Vendor Ledger</b>
+  <input type="text" id="vendorSearch" placeholder="Search vendor..." oninput="renderVendorLedger()" style="margin-top:8px;">
+  <div id="vendorLedger" style="margin-top:8px;"></div>
+</div>
+
+<div class="card" id="viewPending" style="display:none;">
+  <div class="stat pending"><span><b>Total Receivable (net of advances &amp; adjustments)</b></span><span class="v" id="pendingGrandTotal">0</span></div>
+  <div id="pendingList" style="margin-top:10px;"></div>
+  <div class="stat payable" style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px;"><span><b>Total Payable to Vendors (net of adjustments &amp; advances)</b></span><span class="v" id="payableGrandTotal">0</span></div>
+  <div id="payableList" style="margin-top:10px;"></div>
+</div>
+
+  </div>
+</div>
+
+<div class="modal-overlay" id="accountModal">
+  <div class="modal-box">
+    <h3 id="accountModalTitle">Add Bank Account</h3>
+    <div class="field"><label>Name</label><input type="text" id="acctName" placeholder="e.g. SBI Current, HDFC CC"></div>
+    <div class="grid2" style="margin-top:10px;">
+      <div><label>Opening balance</label><input type="number" id="acctOpening" step="0.01" placeholder="0.00"></div>
+      <div><label>As of date</label><input type="date" id="acctOpeningDate"></div>
+    </div>
+    <button class="btn-add" onclick="saveAccount()">Save</button>
+    <button class="btn-secondary" onclick="closeAccountModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="itemModal">
+  <div class="modal-box">
+    <h3 id="itemModalTitle">Add Item</h3>
+    <div class="field"><label>Name</label><input type="text" id="itemName" placeholder="e.g. Brick, Coal, Clay"></div>
+    <div class="grid2" style="margin-top:10px;">
+      <div><label>Unit</label><input type="text" id="itemUnit" placeholder="pcs / tonne / kg"></div>
+      <div><label>Kind</label>
+        <select id="itemKind"><option value="raw">Raw material</option><option value="finished">Finished product</option></select>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:10px;">
+      <div><label>Opening qty</label><input type="number" id="itemOpeningQty" step="0.001" placeholder="0"></div>
+      <div><label>Opening value (₹)</label><input type="number" id="itemOpeningValue" step="0.01" placeholder="0"></div>
+    </div>
+    <button class="btn-add" onclick="saveItem()">Save</button>
+    <button class="btn-secondary" onclick="closeItemModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="payModal">
+  <div class="modal-box">
+    <h3 id="payModalTitle">Record Payment</h3>
+    <div id="payModalBillInfo" class="small" style="margin-bottom:6px;"></div>
+    <div class="field">
+      <label id="payAmountLabel">Amount</label>
+      <input type="number" id="payAmount" step="0.01">
+      <button type="button" id="paySplitToggleBtn" class="toggle-btn" onclick="togglePaySplitFields()">Split across cash / bank / advance?</button>
+    </div>
+    <div class="field"><label>Date</label><input type="date" id="payDate"></div>
+    <div class="field" id="payMethodField">
+      <label>Via</label>
+      <div class="paid-toggle">
+        <div class="paid-btn" id="payMethodCash" onclick="setPayMethod('cash')">💵 Cash</div>
+        <div class="paid-btn" id="payMethodBank" onclick="setPayMethod('bank')">🏦 Bank</div>
+        <div class="paid-btn" id="payMethodAdvance" onclick="setPayMethod('advance')">🪙 Advance</div>
+      </div>
+      <div id="payBankAccountField" class="field" style="display:none;">
+        <label>Bank account</label>
+        <select id="payBankAccountSelect"></select>
+      </div>
+      <div id="payAdvanceHint" class="small"></div>
+    </div>
+    <div class="field" id="paySplitInputs" style="display:none;">
+      <div class="grid3">
+        <div><label>Cash</label><input type="number" id="paySplitCash" step="0.01" placeholder="0.00" oninput="onPaySplitInput()"></div>
+        <div><label>Bank</label><input type="number" id="paySplitBank" step="0.01" placeholder="0.00" oninput="onPaySplitInput()"></div>
+        <div><label>Advance</label><input type="number" id="paySplitAdvance" step="0.01" placeholder="0.00" oninput="onPaySplitInput()"></div>
+      </div>
+      <div id="paySplitBankAccountField" class="field" style="display:none;">
+        <label>Bank account (bank portion)</label>
+        <select id="paySplitBankAccountSelect"></select>
+      </div>
+      <div class="small" style="margin-top:4px;" id="paySplitTotalHint">Total: 0.00</div>
+    </div>
+    <div class="field" id="payLoadingField">
+      <button type="button" id="payLoadingToggleBtn" class="toggle-btn" onclick="togglePayLoadingFields()">Also paid loading/unloading expense?</button>
+      <div id="payLoadingInputs" class="grid2" style="display:none;margin-top:8px;">
+        <div><label>Amount</label><input type="number" id="payLoadingAmount" step="0.01"></div>
+        <div><label>Paid via</label><select id="payLoadingMethod"><option value="cash">Cash</option><option value="bank">Bank</option></select></div>
+      </div>
+      <div id="payLoadingBankAccountField" class="field" style="display:none;">
+        <label>Loading/unloading bank account</label>
+        <select id="payLoadingBankAccountSelect"></select>
+      </div>
+    </div>
+    <button class="btn-add" onclick="confirmPay()">Save Payment</button>
+    <button class="btn-secondary" onclick="closePayModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="adjModal">
+  <div class="modal-box">
+    <h3>Add Client Adjustment</h3>
+    <div id="adjModalClient" class="small" style="margin-bottom:6px;"></div>
+    <div class="field" style="position:relative;">
+      <label>Type</label>
+      <input type="text" id="adjType" placeholder="Discount, Round Off, Bad Debt, TDS..." autocomplete="off" oninput="onAdjTypeInput()" onfocus="onAdjTypeInput()" onblur="setTimeout(hideAdjSuggestions,180)" onkeydown="onSuggestKey(event,'adj')">
+      <div id="adjSuggestions" class="suggest-box"></div>
+    </div>
+    <div class="field"><label>Amount</label><input type="number" id="adjAmount" step="0.01"></div>
+    <div class="field"><label>Date</label><input type="date" id="adjDate"></div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="adjNote"></div>
+    <button class="btn-add" onclick="confirmAdjustment()">Save Adjustment</button>
+    <button class="btn-secondary" onclick="closeAdjModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="vAdjModal">
+  <div class="modal-box">
+    <h3>Add Vendor Adjustment</h3>
+    <div id="vAdjModalVendor" class="small" style="margin-bottom:6px;"></div>
+    <div class="field" style="position:relative;">
+      <label>Type</label>
+      <input type="text" id="vAdjType" placeholder="Discount Received, Round Off, Quality Claim, TDS..." autocomplete="off" oninput="onVAdjTypeInput()" onfocus="onVAdjTypeInput()" onblur="setTimeout(hideVAdjSuggestions,180)" onkeydown="onSuggestKey(event,'vadj')">
+      <div id="vAdjSuggestions" class="suggest-box"></div>
+    </div>
+    <div class="field"><label>Amount</label><input type="number" id="vAdjAmount" step="0.01"></div>
+    <div class="field"><label>Date</label><input type="date" id="vAdjDate"></div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="vAdjNote"></div>
+    <button class="btn-add" onclick="confirmVendorAdjustment()">Save Adjustment</button>
+    <button class="btn-secondary" onclick="closeVAdjModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="vAdvModal">
+  <div class="modal-box">
+    <h3>Add Vendor Advance</h3>
+    <div id="vAdvModalVendor" class="small" style="margin-bottom:6px;"></div>
+    <div class="field"><label>Amount</label><input type="number" id="vAdvAmount" step="0.01"></div>
+    <div class="field"><label>Date</label><input type="date" id="vAdvDate"></div>
+    <div class="field">
+      <label>Via</label>
+      <div class="paid-toggle">
+        <div class="paid-btn active-yes" id="vAdvMethodCash" onclick="setVAdvMethod('cash')">💵 Cash</div>
+        <div class="paid-btn" id="vAdvMethodBank" onclick="setVAdvMethod('bank')">🏦 Bank</div>
+      </div>
+      <div id="vAdvBankField" class="field" style="display:none;">
+        <label>Bank account</label>
+        <select id="vAdvBankSelect"></select>
+      </div>
+    </div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="vAdvNote"></div>
+    <button class="btn-add" onclick="confirmVendorAdvance()">Save Advance</button>
+    <button class="btn-secondary" onclick="closeVAdvModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="editModal">
+  <div class="modal-box">
+    <h3 id="editModalTitle">Edit Entry</h3>
+    <div id="editModalFields"></div>
+    <button class="btn-add" onclick="confirmEdit()">Save Changes</button>
+    <button class="btn-secondary" onclick="closeEditModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="editPayModal">
+  <div class="modal-box">
+    <h3>Edit Payment</h3>
+    <div id="editPayInfo" class="small" style="margin-bottom:6px;"></div>
+    <div class="field">
+      <label id="editPayAmountLabel">Amount</label>
+      <input type="number" id="editPayAmount" step="0.01">
+      <button type="button" id="editPaySplitToggleBtn" class="toggle-btn" onclick="toggleEditPaySplitFields()">Split across cash / bank / advance?</button>
+    </div>
+    <div class="field"><label>Date</label><input type="date" id="editPayDate"></div>
+    <div class="field" id="editPayMethodField">
+      <label>Method</label>
+      <div class="paid-toggle">
+        <div class="paid-btn" id="editPayMethodCash" onclick="setEditPayMethod('cash')">💵 Cash</div>
+        <div class="paid-btn" id="editPayMethodBank" onclick="setEditPayMethod('bank')">🏦 Bank</div>
+        <div class="paid-btn" id="editPayMethodAdvance" onclick="setEditPayMethod('advance')">🪙 Advance</div>
+      </div>
+      <div id="editPayBankField" class="field" style="display:none;">
+        <label>Bank account</label>
+        <select id="editPayBankSelect"></select>
+      </div>
+      <div id="editPayAdvanceHint" class="small"></div>
+    </div>
+    <div class="field" id="editPaySplitInputs" style="display:none;">
+      <div class="grid3">
+        <div><label>Cash</label><input type="number" id="editPaySplitCash" step="0.01" placeholder="0.00" oninput="onEditPaySplitInput()"></div>
+        <div><label>Bank</label><input type="number" id="editPaySplitBank" step="0.01" placeholder="0.00" oninput="onEditPaySplitInput()"></div>
+        <div><label>Advance</label><input type="number" id="editPaySplitAdvance" step="0.01" placeholder="0.00" oninput="onEditPaySplitInput()"></div>
+      </div>
+      <div id="editPaySplitBankAccountField" class="field" style="display:none;">
+        <label>Bank account (bank portion)</label>
+        <select id="editPaySplitBankAccountSelect"></select>
+      </div>
+      <div class="small" style="margin-top:4px;" id="editPaySplitTotalHint">Total: 0.00</div>
+    </div>
+    <div id="editPaySplitNotice" class="notice-amber" style="display:none;">This payment is part of a split. Saving will replace all parts of the split on this date.</div>
+    <button class="btn-add" onclick="confirmEditPay()">Save Changes</button>
+    <button class="btn-secondary" onclick="closeEditPayModal()">Cancel</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="fuzzyModal">
+  <div class="modal-box">
+    <h3 id="fuzzyTitle">Item not found</h3>
+    <div id="fuzzyBody" style="font-size:13px;"></div>
+    <div id="fuzzyChoices" style="margin-top:10px;"></div>
+    <div id="fuzzyActions" style="margin-top:12px;display:flex;gap:8px;">
+      <button class="btn-add" style="margin-top:0;flex:1;" id="fuzzyConfirmBtn" onclick="fuzzyConfirm()">Add &amp; Save</button>
+      <button class="btn-secondary" style="margin-top:0;flex:1;" onclick="closeFuzzyModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="dataModal">
+  <div class="modal-box">
+    <h3>🗄️ Backup &amp; Restore</h3>
+    <div class="grid2">
+      <button style="background:var(--accent);color:#fff;" onclick="backupData()">⬇️ Backup</button>
+      <label style="background:var(--amber);color:#fff;text-align:center;display:flex;align-items:center;justify-content:center;border-radius:8px;cursor:pointer;">
+        ⬆️ Restore
+        <input type="file" accept="application/json,.json" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;" onchange="restoreData(event)">
+      </label>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px;">
+      <div class="small" style="font-weight:600;margin-bottom:6px;color:var(--text);">☁️ Cloudflare D1 &amp; Workers</div>
+      <button style="width:100%;background:#f6821f;color:#fff;font-weight:600;padding:8px 12px;border-radius:8px;border:none;cursor:pointer;" onclick="window.location.href='/api/cf/export-d1-sql'">⚡ Download Cloudflare D1 SQL Dump</button>
+      <div class="small" style="margin-top:4px;color:var(--muted);">Use with <code>wrangler d1 execute &lt;DB_NAME&gt; --file=...</code></div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px;">
+      <div class="small" style="color:var(--red);font-weight:600;margin-bottom:6px;">Danger zone</div>
+      <div class="field"><label>Type DELETE to confirm clearing all data</label><input type="text" id="clearConfirmText" placeholder="DELETE"></div>
+      <button style="width:100%;margin-top:8px;background:var(--red);color:#fff;" onclick="clearAllData()">🗑️ Clear All Data</button>
+      <div class="small" style="margin-top:4px;">Items and bank accounts are kept.</div>
+    </div>
+    <button class="btn-secondary" style="margin-top:14px;" onclick="closeDataModal()">Close</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="reportModal">
+  <div class="modal-box">
+    <h3>📄 Reports</h3>
+    <div class="grid2">
+      <div><label>From</label><input type="date" id="fromDate"></div>
+      <div><label>To</label><input type="date" id="toDate"></div>
+    </div>
+    <div class="field">
+      <label>Bank account</label>
+      <select id="reportBankAccount"></select>
+    </div>
+    <div class="grid3" style="margin-top:10px;">
+      <button style="background:var(--green);color:#fff;" onclick="downloadReport()">📕 PDF</button>
+      <button style="background:#0891b2;color:#fff;" onclick="viewReport()">👁️ View</button>
+      <button style="background:var(--accent);color:#fff;" onclick="downloadExcel()">📗 Excel</button>
+    </div>
+    <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px;">
+      <b style="font-size:13px;">🧾 Tally Import (XML)</b>
+      <div class="grid2" style="margin-top:8px;">
+        <div><label>Sales Ledger</label><input type="text" id="tallySalesLedger" value="Sales Account"></div>
+        <div><label>Purchase Ledger</label><input type="text" id="tallyPurchaseLedger" value="Purchase Account"></div>
+      </div>
+      <div class="field"><label>Bank Ledger (combined mode)</label><input type="text" id="tallyBankLedger" value="Bank Account"></div>
+      <button class="btn-add" style="background:#7b2ff7;" onclick="downloadTally()">🧾 Export Tally XML</button>
+    </div>
+    <button class="btn-secondary" style="margin-top:14px;" onclick="closeReportModal()">Close</button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="userModal">
+  <div class="modal-box">
+    <h3 id="userModalTitle">Add User</h3>
+    <div class="field"><label>Username</label><input type="text" id="userUsername" autocomplete="off" placeholder="e.g. ramesh"></div>
+    <div class="field"><label>Label / Full name</label><input type="text" id="userLabel" autocomplete="off" placeholder="e.g. Ramesh Kumar"></div>
+    <div class="field">
+      <label>Role</label>
+      <select id="userRole" onchange="onUserRoleChange()">
+        <option value="operator">Operator (data entry)</option>
+        <option value="admin">Admin (full access)</option>
+      </select>
+    </div>
+    <div class="field" id="userWindowField">
+      <label>How far back can they enter entries?</label>
+      <select id="userWindowDays" onchange="onUserWindowChange()">
+        <option value="0">Today only</option>
+        <option value="1">Today + yesterday</option>
+        <option value="2">Last 3 days</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input type="number" id="userWindowDaysCustom" step="1" min="0" placeholder="Days back" style="display:none;margin-top:6px;">
+      <div class="small" style="margin-top:4px;">0 = today only · 1 = today and yesterday · 7 = last 7 days, etc. Admins always unlimited.</div>
+    </div>
+    <div class="field">
+      <label id="userPasswordLabel">Password</label>
+      <input type="text" id="userPassword" autocomplete="off" placeholder="Set a password">
+      <div id="userPasswordHint" class="small"></div>
+    </div>
+    <button class="btn-add" onclick="saveUser()">Save</button>
+    <button class="btn-secondary" onclick="closeUserModal()">Cancel</button>
+  </div>
+</div>
+
+</div>
+
+<script src="/static/js/01-state-helpers.js"></script>
+<script src="/static/js/02-auth-load.js"></script>
+<script src="/static/js/03-entries.js"></script>
+<script src="/static/js/04-modals-delete.js"></script>
+<script src="/static/js/05-views.js"></script>
+<script src="/static/js/07-app.js"></script>
+</body>
+</html>

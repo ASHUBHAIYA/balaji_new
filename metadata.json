@@ -1,0 +1,6 @@
+{
+  "name": "SHREE BALAJI ASSOCIATES — Tracker",
+  "description": "Sales, Purchase, Stock & Financial Year Tracker for Shree Balaji Associates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

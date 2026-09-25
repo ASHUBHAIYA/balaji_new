@@ -1,0 +1,22 @@
+name = "balaji-associates-tracker"
+main = "src/worker/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Static Assets directory for Cloudflare Workers / Pages
+[assets]
+directory = "."
+binding = "ASSETS"
+
+# Cloudflare D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "balaji-tracker-d1"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+COMPANY_NAME = "SHREE BALAJI ASSOCIATES"
+COMPANY_GSTIN = "23AEPFS7841N1Z9"
+COMPANY_ADDRESS = "Near Om Sai Biofuels Bargawan Odgadi Distt. Singrauli"
+SESSION_SECRET = "balaji_secret_cloudflare_key_2026"
