@@ -225,7 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_bank_tx_fy_date ON bank_transactions(fy, date);
 
 -- Seed Initial FYs
 INSERT OR IGNORE INTO financial_years (label, start_date, end_date, is_default) VALUES
-  ('2024-25', '2024-04-01', '2025-03-31', 0),
   ('2025-26', '2025-04-01', '2026-03-31', 0),
   ('2026-27', '2026-04-01', '2027-03-31', 1);
 
