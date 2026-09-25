@@ -10,9 +10,9 @@ binding = "ASSETS"
 
 # Cloudflare D1 Database Binding
 [[d1_databases]]
-binding = "DB"
+binding = "balaji_tracker_d1"
 database_name = "balaji-tracker-d1"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "7e60c05b-6d72-4264-8f9d-eada9bb00a6f"
 migrations_dir = "migrations"
 
 [vars]
