@@ -23,34 +23,73 @@ function updateFyBadge(){
 }
 
 async function loadYearOptions(){
+  const fallbackYears = [
+    { label: '2026-27', start: '2026-04-01', end: '2027-03-31' },
+    { label: '2025-26', start: '2025-04-01', end: '2026-03-31' },
+    { label: '2024-25', start: '2024-04-01', end: '2025-03-31' }
+  ];
+
+  let rawYears = [];
+  let active = '2026-27';
+
   try{
     const res = await fetch('/api/years');
-    if(!res.ok) return;
-    const data = await res.json();
-    availableYears = (data.years || []).map(y => y.label || y);
-    const infos = data.years || [];
-    const loginSel = document.getElementById('loginFy');
-    const activeSel = document.getElementById('activeFySelect');
-    const copySel = document.getElementById('newFyCopyFrom');
-    const active = data.active || data.default || '';
-    if(loginSel){
-      loginSel.innerHTML = infos.map(y =>
-        `<option value="${y.label}" ${y.label===active?'selected':''}>${y.label} (${y.start} → ${y.end})</option>`
-      ).join('') || `<option value="${active}">${active}</option>`;
+    if(res.ok){
+      const data = await res.json();
+      if(data && Array.isArray(data.years) && data.years.length > 0){
+        rawYears = data.years;
+      }
+      active = data.active || data.default || (rawYears[0] && (rawYears[0].label || rawYears[0])) || '2026-27';
     }
-    if(activeSel){
-      activeSel.innerHTML = infos.map(y =>
-        `<option value="${y.label}" ${y.label===active?'selected':''}>${y.label}</option>`
-      ).join('');
+  }catch(e){
+    console.warn('Using fallback financial years:', e);
+  }
+
+  if(rawYears.length === 0){
+    rawYears = fallbackYears;
+  }
+
+  // Normalize into array of objects { label, start, end }
+  const normalized = rawYears.map(y => {
+    if(typeof y === 'object' && y && y.label){
+      const s = y.start || y.start_date || (y.label.split('-')[0] + '-04-01');
+      const e = y.end || y.end_date || ((parseInt(y.label.split('-')[0], 10) + 1) + '-03-31');
+      return { label: y.label, start: s, end: e };
     }
-    if(copySel){
-      copySel.innerHTML = infos.map(y => `<option value="${y.label}">${y.label}</option>`).join('');
+    const lbl = String(y || '2026-27');
+    const startY = parseInt(lbl.split('-')[0], 10) || 2026;
+    return { label: lbl, start: `${startY}-04-01`, end: `${startY + 1}-03-31` };
+  });
+
+  availableYears = normalized.map(x => x.label);
+
+  const loginSel = document.getElementById('loginFy');
+  const activeSel = document.getElementById('activeFySelect');
+  const copySel = document.getElementById('newFyCopyFrom');
+
+  if(loginSel){
+    loginSel.innerHTML = normalized.map(y =>
+      `<option value="${y.label}" ${y.label===active?'selected':''}>${y.label} (${y.start} → ${y.end})</option>`
+    ).join('');
+    if(loginSel.value !== active && active){
+      loginSel.value = active;
     }
-    currentFy = active;
-    const info = infos.find(x => x.label === active);
-    const hint = document.getElementById('fyRangeHint');
-    if(hint && info) hint.textContent = info.start + ' to ' + info.end;
-  }catch(e){}
+  }
+
+  if(activeSel){
+    activeSel.innerHTML = normalized.map(y =>
+      `<option value="${y.label}" ${y.label===active?'selected':''}>${y.label}</option>`
+    ).join('');
+  }
+
+  if(copySel){
+    copySel.innerHTML = normalized.map(y => `<option value="${y.label}">${y.label}</option>`).join('');
+  }
+
+  currentFy = active;
+  const info = normalized.find(x => x.label === active);
+  const hint = document.getElementById('fyRangeHint');
+  if(hint && info) hint.textContent = info.start + ' to ' + info.end;
 }
 
 function fillFyUI(data){
@@ -148,8 +187,17 @@ async function attemptLogin(){
       errBox.style.display = 'block';
       return;
     }
-    currentUser = await res.json();
-    if(currentUser && currentUser.token){
+    const respData = await res.json();
+    currentUser = {
+      username: respData.username || (respData.user && respData.user.username) || username,
+      role: respData.role || (respData.user && respData.user.role) || (username === 'admin' ? 'admin' : 'operator'),
+      label: respData.label || (respData.user && respData.user.label) || (username === 'admin' ? 'Administrator' : 'Data Entry Operator'),
+      fy: respData.fy || (respData.user && respData.user.fy) || fy || '2026-27',
+      token: respData.token || (respData.user && respData.user.token) || '',
+      years: respData.years || ['2026-27', '2025-26', '2024-25'],
+      yearInfo: respData.yearInfo || { label: fy || '2026-27', start: '2026-04-01', end: '2027-03-31' }
+    };
+    if(currentUser.token){
       setStoredToken(currentUser.token);
     }
     errBox.style.display = 'none';
@@ -183,9 +231,12 @@ function applyDateBounds(){
   });
 }
 function enterApp(){
+  if(!currentUser) return;
   document.getElementById('loginOverlay').style.display = 'none';
   document.getElementById('appContent').style.display = 'block';
-  document.getElementById('whoAmI').textContent = currentUser.label + ' (' + currentUser.username + ')';
+  const displayLabel = currentUser.label || (currentUser.role === 'admin' ? 'Administrator' : 'User');
+  const displayUser = currentUser.username || 'admin';
+  document.getElementById('whoAmI').textContent = displayLabel + ' (' + displayUser + ')';
   document.body.classList.toggle('is-operator', !isAdmin());
   fillFyUI(currentUser);
   updateFyBadge();
@@ -210,7 +261,16 @@ function enterApp(){
     const tok = getStoredToken();
     const res = await fetch('/api/me');
     if(res.ok){
-      currentUser = await res.json();
+      const respData = await res.json();
+      currentUser = {
+        username: respData.username || (respData.user && respData.user.username) || 'admin',
+        role: respData.role || (respData.user && respData.user.role) || 'admin',
+        label: respData.label || (respData.user && respData.user.label) || 'Administrator',
+        fy: respData.fy || (respData.user && respData.user.fy) || '2026-27',
+        token: tok || '',
+        years: respData.years || ['2026-27', '2025-26', '2024-25'],
+        yearInfo: respData.yearInfo || { label: '2026-27', start: '2026-04-01', end: '2027-03-31' }
+      };
       fillFyUI(currentUser);
       enterApp();
     } else if(!tok) {

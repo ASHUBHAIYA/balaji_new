@@ -22,7 +22,11 @@
     </div>
     <h3>🔒 Sign in</h3>
     <div class="field"><label>Financial year</label>
-      <select id="loginFy"><option value="">Loading…</option></select>
+      <select id="loginFy">
+        <option value="2026-27" selected>2026-27 (2026-04-01 → 2027-03-31)</option>
+        <option value="2025-26">2025-26 (2025-04-01 → 2026-03-31)</option>
+        <option value="2024-25">2024-25 (2024-04-01 → 2025-03-31)</option>
+      </select>
     </div>
     <div class="field"><label>User ID</label><input type="text" id="loginUser" autocomplete="username" placeholder="User ID"></div>
     <div class="field"><label>Password</label><input type="password" id="loginPass" autocomplete="current-password" placeholder="Password"></div>
