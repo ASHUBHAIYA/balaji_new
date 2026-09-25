@@ -68,10 +68,13 @@ async function loadYearOptions(){
   const copySel = document.getElementById('newFyCopyFrom');
 
   if(loginSel){
+    const previousChoice = loginSel.value;
     loginSel.innerHTML = normalized.map(y =>
       `<option value="${y.label}" ${y.label===active?'selected':''}>${y.label} (${y.start} → ${y.end})</option>`
     ).join('');
-    if(loginSel.value !== active && active){
+    if(previousChoice && normalized.some(x => x.label === previousChoice)){
+      loginSel.value = previousChoice;
+    } else if(loginSel.value !== active && active){
       loginSel.value = active;
     }
   }
