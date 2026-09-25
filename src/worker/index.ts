@@ -346,7 +346,7 @@ async function parseWorkerToken(token: string, secret: string): Promise<{ userna
   }
 }
 
-// Password verification (compatible with scrypt strings and standard credentials)
+// Password verification
 export function verifyWorkerPassword(storedHash: string, candidate: string): boolean {
   if (!candidate) return false;
   if (storedHash && storedHash === candidate) return true;
@@ -436,6 +436,17 @@ function requireAdmin(c: any) {
     return c.json({ error: 'admin only' }, 403);
   }
   return null;
+}
+
+async function getNextChallanNo(db: D1Database, fy: string): Promise<string> {
+  try {
+    const row = await db.prepare('SELECT last_number FROM challan_sequence WHERE fy = ?').bind(fy).first<{ last_number: number }>();
+    const nextNum = (row?.last_number || 0) + 1;
+    await db.prepare('INSERT OR REPLACE INTO challan_sequence (fy, last_number) VALUES (?, ?)').bind(fy, nextNum).run();
+    return `CH-${fy.slice(2, 4)}-${String(nextNum).padStart(4, '0')}`;
+  } catch {
+    return `CH-${Date.now().toString().slice(-4)}`;
+  }
 }
 
 // -------------------------------------------------------------
@@ -694,8 +705,20 @@ app.post('/api/years', async (c) => {
   return c.json({ ok: true, fy: label, copiedFrom: copyFrom, years: [label] });
 });
 
+app.post('/api/years/default', async (c) => {
+  const check = requireAdmin(c); if (check) return check;
+  const b = await c.req.json().catch(() => ({}));
+  const label = String(b.fy || b.year || '').trim();
+  const db = getD1(c);
+  if (db && label) {
+    await db.prepare('UPDATE financial_years SET is_default = 0').run();
+    await db.prepare('UPDATE financial_years SET is_default = 1 WHERE label = ?').bind(label).run();
+  }
+  return c.json({ ok: true, default: label });
+});
+
 // -------------------------------------------------------------
-// Data Loader Endpoints (Matches standard load() format)
+// Entries (Sales, Purchases, Expenses)
 // -------------------------------------------------------------
 app.get('/api/entries', async (c) => {
   const check = requireAuth(c); if (check) return check;
@@ -705,7 +728,8 @@ app.get('/api/entries', async (c) => {
   try {
     const { results } = await db.prepare('SELECT * FROM entries WHERE fy = ? ORDER BY id ASC').bind(fy).all<any>();
     return c.json(results || []);
-  } catch {
+  } catch (e) {
+    console.error('Failed to get entries:', e);
     return c.json([]);
   }
 });
@@ -714,69 +738,144 @@ app.post('/api/entries', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
 
   if (!db) return c.json({ ok: false, error: 'Database not bound' }, 500);
 
-  const res = await db.prepare(`
-    INSERT INTO entries (
-      fy, date, kind, client, vendor, item_type, qty, rate,
-      expense_type, amount, note, received, method, is_challan,
-      billed_under_id, challan_no, bank_account_id, created_by
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    fy, b.date, b.kind, b.client || null, b.vendor || null, b.item_type || null,
-    b.qty !== undefined && b.qty !== null && b.qty !== '' ? parseFloat(b.qty) : null,
-    b.rate !== undefined && b.rate !== null && b.rate !== '' ? parseFloat(b.rate) : null,
-    b.expense_type || null, parseFloat(b.amount || 0),
-    b.note || null, b.received ? 1 : 0, b.method || 'cash',
-    b.is_challan ? 1 : 0, b.billed_under_id || null, b.challan_no || null,
-    b.bank_account_id || 1, user.username
-  ).run();
+  const kind = b.kind || 'sale';
+  const entryDate = b.date || new Date().toISOString().slice(0, 10);
+  const client = b.client ? String(b.client).trim() : null;
+  const vendor = b.vendor ? String(b.vendor).trim() : null;
+  const itemType = (b.itemType || b.item_type || b.chosenItemName) ? String(b.itemType || b.item_type || b.chosenItemName).trim() : null;
+  const expenseType = (b.expenseType || b.expense_type) ? String(b.expenseType || b.expense_type).trim() : null;
+  
+  let qty = b.qty !== undefined && b.qty !== null && b.qty !== '' ? parseFloat(b.qty) : null;
+  let rate = b.rate !== undefined && b.rate !== null && b.rate !== '' ? parseFloat(b.rate) : null;
+  let amount = 0;
 
-  const insertId = res.meta?.last_row_id;
-
-  // Auto record initial payment if received=1 and bill mode
-  if (b.received && b.amount > 0 && !b.is_challan && insertId) {
-    await db.prepare(`
-      INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(fy, insertId, b.date, b.method || 'cash', parseFloat(b.amount), 0, b.bank_account_id || 1, user.username).run();
+  if (b.amount !== undefined && b.amount !== null && b.amount !== '') {
+    amount = parseFloat(b.amount);
+  } else if (qty !== null && rate !== null) {
+    amount = Math.round(qty * rate * 100) / 100;
   }
 
-  return c.json({ ok: true, id: insertId });
+  const isChallan = !!(b.isChallan || b.is_challan);
+  let challanNo = b.challanNo || b.challan_no || null;
+  if (isChallan && !challanNo) {
+    challanNo = await getNextChallanNo(db, fy);
+  }
+
+  const method = b.method || 'cash';
+  const isReceived = !!(b.received || b.paid);
+  const bankAccountId = parseInt(b.bankAccountId || b.bank_account_id || 1, 10) || 1;
+
+  try {
+    const res = await db.prepare(`
+      INSERT INTO entries (
+        fy, date, kind, client, vendor, item_type, qty, rate,
+        expense_type, amount, note, received, method, is_challan,
+        billed_under_id, challan_no, bank_account_id, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      fy, entryDate, kind, client, vendor, itemType,
+      qty, rate, expenseType, amount,
+      b.note ? String(b.note).trim() : null,
+      isReceived ? 1 : 0, method,
+      isChallan ? 1 : 0, b.billed_under_id || b.billedUnderId || null, challanNo,
+      bankAccountId, user.username
+    ).run();
+
+    let insertId = res.meta?.last_row_id;
+    if (!insertId) {
+      const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+      insertId = row?.id;
+    }
+
+    // Auto-create item in items master if not exists
+    if (itemType) {
+      await db.prepare('INSERT OR IGNORE INTO items (fy, name, unit, kind, is_active) VALUES (?, ?, ?, ?, 1)')
+        .bind(fy, itemType, 'pcs', kind === 'purchase' ? 'raw' : 'finished').run();
+      
+      const itRow = await db.prepare('SELECT id FROM items WHERE fy = ? AND name = ?').bind(fy, itemType).first<{ id: number }>();
+      if (itRow && qty) {
+        const movQty = kind === 'sale' ? -qty : qty;
+        await db.prepare(`
+          INSERT INTO stock_movements (fy, date, item_id, qty, source, ref_id, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(fy, entryDate, itRow.id, movQty, kind, insertId || null, user.username).run();
+      }
+    }
+
+    // Auto record payment if paid/received and not a rate-less challan
+    if (isReceived && amount > 0 && !isChallan && insertId) {
+      await db.prepare(`
+        INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        fy, insertId, entryDate, method, amount,
+        parseFloat(b.loadingUnloadingAmount || b.loading_unloading || 0),
+        bankAccountId, user.username
+      ).run();
+
+      // If loading unloading expense was paid
+      const loadingAmt = parseFloat(b.loadingUnloadingAmount || b.loading_unloading || 0);
+      if (loadingAmt > 0) {
+        await db.prepare(`
+          INSERT INTO entries (fy, date, kind, expense_type, amount, method, bank_account_id, note, linked_sale_id, created_by)
+          VALUES (?, ?, 'expense', 'Loading / Unloading', ?, ?, ?, ?, ?, ?)
+        `).bind(
+          fy, entryDate, loadingAmt, b.loadingUnloadingMethod || 'cash',
+          bankAccountId, `Loading/unloading for sale #${insertId}`, insertId, user.username
+        ).run();
+      }
+    }
+
+    return c.json({ ok: true, id: insertId, challanNo });
+  } catch (err: any) {
+    console.error('Error saving entry to D1:', err);
+    return c.json({ error: err.message || 'Failed to save entry' }, 500);
+  }
 });
 
 app.put('/api/entries/:id', async (c) => {
   const check = requireAdmin(c); if (check) return check;
   const id = parseInt(c.req.param('id'), 10);
   const fy = c.get('user')?.fy || '2026-27';
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
-  await db.prepare(`
-    UPDATE entries SET
-      date = COALESCE(?, date),
-      client = COALESCE(?, client),
-      vendor = COALESCE(?, vendor),
-      item_type = COALESCE(?, item_type),
-      qty = ?,
-      rate = ?,
-      amount = COALESCE(?, amount),
-      note = COALESCE(?, note),
-      method = COALESCE(?, method)
-    WHERE id = ? AND fy = ?
-  `).bind(
-    b.date || null, b.client || null, b.vendor || null, b.item_type || null,
-    b.qty !== undefined ? parseFloat(b.qty) : null,
-    b.rate !== undefined ? parseFloat(b.rate) : null,
-    b.amount !== undefined ? parseFloat(b.amount) : null,
-    b.note || null, b.method || null, id, fy
-  ).run();
+  const itemType = b.itemType || b.item_type;
+  const expenseType = b.expenseType || b.expense_type;
+  let qty = b.qty !== undefined && b.qty !== null && b.qty !== '' ? parseFloat(b.qty) : null;
+  let rate = b.rate !== undefined && b.rate !== null && b.rate !== '' ? parseFloat(b.rate) : null;
+  let amount = b.amount !== undefined ? parseFloat(b.amount) : (qty && rate ? qty * rate : undefined);
 
-  return c.json({ ok: true });
+  try {
+    await db.prepare(`
+      UPDATE entries SET
+        date = COALESCE(?, date),
+        client = COALESCE(?, client),
+        vendor = COALESCE(?, vendor),
+        item_type = COALESCE(?, item_type),
+        expense_type = COALESCE(?, expense_type),
+        qty = COALESCE(?, qty),
+        rate = COALESCE(?, rate),
+        amount = COALESCE(?, amount),
+        note = COALESCE(?, note),
+        method = COALESCE(?, method)
+      WHERE id = ? AND fy = ?
+    `).bind(
+      b.date || null, b.client || null, b.vendor || null, itemType || null, expenseType || null,
+      qty, rate, amount !== undefined ? amount : null,
+      b.note || null, b.method || null, id, fy
+    ).run();
+
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to update entry' }, 500);
+  }
 });
 
 app.delete('/api/entries/:id', async (c) => {
@@ -786,11 +885,101 @@ app.delete('/api/entries/:id', async (c) => {
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
-  await db.prepare('DELETE FROM payments WHERE entry_id = ? AND fy = ?').bind(id, fy).run();
-  await db.prepare('DELETE FROM stock_movements WHERE ref_id = ? AND fy = ?').bind(id, fy).run();
-  await db.prepare('DELETE FROM entries WHERE id = ? AND fy = ?').bind(id, fy).run();
+  try {
+    await db.prepare('UPDATE entries SET billed_under_id = NULL WHERE billed_under_id = ? AND fy = ?').bind(id, fy).run();
+    await db.prepare('DELETE FROM payments WHERE entry_id = ? AND fy = ?').bind(id, fy).run();
+    await db.prepare('DELETE FROM stock_movements WHERE ref_id = ? AND fy = ?').bind(id, fy).run();
+    await db.prepare('DELETE FROM entries WHERE linked_sale_id = ? AND fy = ?').bind(id, fy).run();
+    await db.prepare('DELETE FROM entries WHERE id = ? AND fy = ?').bind(id, fy).run();
 
-  return c.json({ ok: true });
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to delete entry' }, 500);
+  }
+});
+
+// Record Payment on Sales/Purchase Entry
+app.post('/api/entries/:id/pay', async (c) => {
+  const check = requireAuth(c); if (check) return check;
+  const id = parseInt(c.req.param('id'), 10);
+  const fy = c.get('user')?.fy || '2026-27';
+  const user = c.get('user')!;
+  const b = await c.req.json().catch(() => ({}));
+  const db = getD1(c);
+  if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  const amount = parseFloat(b.amount || 0);
+  if (isNaN(amount) || amount <= 0) {
+    return c.json({ error: 'invalid amount' }, 400);
+  }
+
+  const payDate = b.date || new Date().toISOString().slice(0, 10);
+  const method = b.method || 'cash';
+  const bankAccountId = parseInt(b.bankAccountId || b.bank_account_id || 1, 10) || 1;
+  const loadingAmt = parseFloat(b.loadingUnloadingAmount || b.loading_unloading || 0);
+
+  try {
+    const res = await db.prepare(`
+      INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(fy, id, payDate, method, amount, loadingAmt, bankAccountId, user.username).run();
+
+    let paymentId = res.meta?.last_row_id;
+    if (!paymentId) {
+      const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+      paymentId = row?.id;
+    }
+
+    if (loadingAmt > 0) {
+      await db.prepare(`
+        INSERT INTO entries (fy, date, kind, expense_type, amount, method, bank_account_id, note, linked_sale_id, created_by)
+        VALUES (?, ?, 'expense', 'Loading / Unloading', ?, ?, ?, ?, ?, ?)
+      `).bind(
+        fy, payDate, loadingAmt, b.loadingUnloadingMethod || 'cash',
+        bankAccountId, `Loading/unloading for sale #${id}`, id, user.username
+      ).run();
+    }
+
+    return c.json({ ok: true, paymentId });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to record payment' }, 500);
+  }
+});
+
+app.post('/api/purchases/:id/pay', async (c) => {
+  const check = requireAuth(c); if (check) return check;
+  const id = parseInt(c.req.param('id'), 10);
+  const fy = c.get('user')?.fy || '2026-27';
+  const user = c.get('user')!;
+  const b = await c.req.json().catch(() => ({}));
+  const db = getD1(c);
+  if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  const amount = parseFloat(b.amount || 0);
+  if (isNaN(amount) || amount <= 0) {
+    return c.json({ error: 'invalid amount' }, 400);
+  }
+
+  const payDate = b.date || new Date().toISOString().slice(0, 10);
+  const method = b.method || 'cash';
+  const bankAccountId = parseInt(b.bankAccountId || b.bank_account_id || 1, 10) || 1;
+
+  try {
+    const res = await db.prepare(`
+      INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+    `).bind(fy, id, payDate, method, amount, bankAccountId, user.username).run();
+
+    let paymentId = res.meta?.last_row_id;
+    if (!paymentId) {
+      const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+      paymentId = row?.id;
+    }
+
+    return c.json({ ok: true, paymentId });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to record payment' }, 500);
+  }
 });
 
 // Payments
@@ -811,19 +1000,52 @@ app.post('/api/payments', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
-  const res = await db.prepare(`
-    INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    fy, b.entry_id, b.date, b.method || 'cash', parseFloat(b.amount || 0),
-    parseFloat(b.loading_unloading || 0), b.bank_account_id || 1, user.username
-  ).run();
+  try {
+    const res = await db.prepare(`
+      INSERT INTO payments (fy, entry_id, date, method, amount, loading_unloading, bank_account_id, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      fy, parseInt(b.entry_id || b.entryId, 10), b.date, b.method || 'cash', parseFloat(b.amount || 0),
+      parseFloat(b.loading_unloading || b.loadingUnloading || 0), parseInt(b.bank_account_id || b.bankAccountId || 1, 10), user.username
+    ).run();
 
-  return c.json({ ok: true, id: res.meta?.last_row_id });
+    return c.json({ ok: true, id: res.meta?.last_row_id });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to save payment' }, 500);
+  }
+});
+
+app.patch('/api/payments/:id', async (c) => {
+  const check = requireAdmin(c); if (check) return check;
+  const id = parseInt(c.req.param('id'), 10);
+  const fy = c.get('user')?.fy || '2026-27';
+  const b = await c.req.json().catch(() => ({}));
+  const db = getD1(c);
+  if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  try {
+    await db.prepare(`
+      UPDATE payments SET
+        date = COALESCE(?, date),
+        method = COALESCE(?, method),
+        amount = COALESCE(?, amount),
+        bank_account_id = COALESCE(?, bank_account_id)
+      WHERE id = ? AND fy = ?
+    `).bind(
+      b.date || null, b.method || null,
+      b.amount !== undefined ? parseFloat(b.amount) : null,
+      b.bankAccountId || b.bank_account_id ? parseInt(b.bankAccountId || b.bank_account_id, 10) : null,
+      id, fy
+    ).run();
+
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to update payment' }, 500);
+  }
 });
 
 app.delete('/api/payments/:id', async (c) => {
@@ -833,8 +1055,12 @@ app.delete('/api/payments/:id', async (c) => {
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
-  await db.prepare('DELETE FROM payments WHERE id = ? AND fy = ?').bind(id, fy).run();
-  return c.json({ ok: true });
+  try {
+    await db.prepare('DELETE FROM payments WHERE id = ? AND fy = ?').bind(id, fy).run();
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Failed to delete payment' }, 500);
+  }
 });
 
 // Advances & Adjustments
@@ -855,14 +1081,14 @@ app.post('/api/advances', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO advances (fy, date, client, amount, method, note, bank_account_id, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(fy, b.date, b.client, parseFloat(b.amount || 0), b.method || 'cash', b.note || null, b.bank_account_id || 1, user.username).run();
+  `).bind(fy, b.date, b.client, parseFloat(b.amount || 0), b.method || 'cash', b.note || null, parseInt(b.bankAccountId || b.bank_account_id || 1, 10), user.username).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -895,14 +1121,14 @@ app.post('/api/vendor-advances', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO vendor_advances (fy, date, vendor, amount, method, note, bank_account_id, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(fy, b.date, b.vendor, parseFloat(b.amount || 0), b.method || 'cash', b.note || null, b.bank_account_id || 1, user.username).run();
+  `).bind(fy, b.date, b.vendor, parseFloat(b.amount || 0), b.method || 'cash', b.note || null, parseInt(b.bankAccountId || b.bank_account_id || 1, 10), user.username).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -935,14 +1161,14 @@ app.post('/api/client-adjustments', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO client_adjustments (fy, date, client, adj_type, amount, note, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(fy, b.date, b.client, b.adj_type || 'Discount', parseFloat(b.amount || 0), b.note || null, user.username).run();
+  `).bind(fy, b.date, b.client, b.adjType || b.adj_type || 'Discount', parseFloat(b.amount || 0), b.note || null, user.username).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -975,14 +1201,14 @@ app.post('/api/vendor-adjustments', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO vendor_adjustments (fy, date, vendor, adj_type, amount, note, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(fy, b.date, b.vendor, b.adj_type || 'Discount Received', parseFloat(b.amount || 0), b.note || null, user.username).run();
+  `).bind(fy, b.date, b.vendor, b.adjType || b.adj_type || 'Discount Received', parseFloat(b.amount || 0), b.note || null, user.username).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -1016,7 +1242,7 @@ app.post('/api/bank-transactions', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
@@ -1025,7 +1251,9 @@ app.post('/api/bank-transactions', async (c) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     fy, b.date, b.type, parseFloat(b.amount || 0), b.category || null,
-    b.note || null, b.bank_account_id || 1, b.party || null, b.target_bank_account_id || null, user.username
+    b.note || null, parseInt(b.bankAccountId || b.bank_account_id || 1, 10), b.party || null,
+    b.targetBankAccountId || b.target_bank_account_id ? parseInt(b.targetBankAccountId || b.target_bank_account_id, 10) : null,
+    user.username
   ).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
@@ -1058,14 +1286,14 @@ app.get('/api/bank-accounts', async (c) => {
 app.post('/api/bank-accounts', async (c) => {
   const check = requireAdmin(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO bank_accounts (fy, name, opening_balance, opening_date, is_active)
     VALUES (?, ?, ?, ?, 1)
-  `).bind(fy, b.name, parseFloat(b.opening_balance || 0), b.opening_date || null).run();
+  `).bind(fy, b.name, parseFloat(b.opening_balance || b.openingBalance || 0), b.opening_date || b.openingDate || null).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -1098,14 +1326,18 @@ app.get('/api/items', async (c) => {
 app.post('/api/items', async (c) => {
   const check = requireAdmin(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO items (fy, name, unit, kind, opening_qty, opening_value, is_active)
     VALUES (?, ?, ?, ?, ?, ?, 1)
-  `).bind(fy, b.name, b.unit || 'pcs', b.kind || 'raw', parseFloat(b.opening_qty || 0), parseFloat(b.opening_value || 0)).run();
+  `).bind(
+    fy, b.name, b.unit || 'pcs', b.kind || 'raw',
+    parseFloat(b.opening_qty || b.openingQty || 0),
+    parseFloat(b.opening_value || b.openingValue || 0)
+  ).run();
 
   return c.json({ ok: true, id: res.meta?.last_row_id });
 });
@@ -1151,23 +1383,47 @@ app.post('/api/production', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  const producedItemId = parseInt(b.producedItemId || b.produced_item_id, 10);
+  const producedQty = parseFloat(b.producedQty || b.produced_qty || 0);
 
   const res = await db.prepare(`
     INSERT INTO production_runs (fy, date, produced_item_id, produced_qty, note, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(fy, b.date, b.produced_item_id, parseFloat(b.produced_qty || 0), b.note || null, user.username).run();
+  `).bind(fy, b.date, producedItemId, producedQty, b.note || null, user.username).run();
 
-  const runId = res.meta?.last_row_id;
+  let runId = res.meta?.last_row_id;
+  if (!runId) {
+    const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+    runId = row?.id;
+  }
+
   if (runId && Array.isArray(b.consumed)) {
     for (const cMat of b.consumed) {
-      await db.prepare(`
-        INSERT INTO production_materials (fy, run_id, item_id, qty)
-        VALUES (?, ?, ?, ?)
-      `).bind(fy, runId, cMat.item_id, parseFloat(cMat.qty || 0)).run();
+      const cItemId = parseInt(cMat.itemId || cMat.item_id, 10);
+      const cQty = parseFloat(cMat.qty || 0);
+      if (cItemId && cQty > 0) {
+        await db.prepare(`
+          INSERT INTO production_materials (fy, run_id, item_id, qty)
+          VALUES (?, ?, ?, ?)
+        `).bind(fy, runId, cItemId, cQty).run();
+
+        await db.prepare(`
+          INSERT INTO stock_movements (fy, date, item_id, qty, source, ref_id, created_by)
+          VALUES (?, ?, ?, ?, 'production_out', ?, ?)
+        `).bind(fy, b.date, cItemId, -cQty, runId, user.username).run();
+      }
     }
+  }
+
+  if (producedItemId && producedQty > 0) {
+    await db.prepare(`
+      INSERT INTO stock_movements (fy, date, item_id, qty, source, ref_id, created_by)
+      VALUES (?, ?, ?, ?, 'production_in', ?, ?)
+    `).bind(fy, b.date, producedItemId, producedQty, runId || null, user.username).run();
   }
 
   return c.json({ ok: true, id: runId });
@@ -1191,19 +1447,24 @@ app.post('/api/challans/bill', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
-  // Insert parent bill entry
   const res = await db.prepare(`
     INSERT INTO entries (fy, date, kind, client, item_type, qty, rate, amount, note, is_challan, created_by)
     VALUES (?, ?, 'sale', ?, ?, ?, ?, ?, ?, 0, ?)
-  `).bind(fy, b.date, b.client, b.item_type || null, b.qty || null, b.rate || null, parseFloat(b.amount || 0), b.note || null, user.username).run();
+  `).bind(fy, b.date, b.client, b.itemType || b.item_type || null, b.qty || null, b.rate || null, parseFloat(b.amount || 0), b.note || null, user.username).run();
 
-  const billId = res.meta?.last_row_id;
-  if (billId && Array.isArray(b.challan_ids)) {
-    for (const cid of b.challan_ids) {
+  let billId = res.meta?.last_row_id;
+  if (!billId) {
+    const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+    billId = row?.id;
+  }
+
+  const challanIds = b.challan_ids || b.challanIds || [];
+  if (billId && Array.isArray(challanIds)) {
+    for (const cid of challanIds) {
       await db.prepare('UPDATE entries SET billed_under_id = ? WHERE id = ? AND fy = ?').bind(billId, cid, fy).run();
     }
   }
@@ -1228,18 +1489,24 @@ app.post('/api/material-supplied/bill', async (c) => {
   const check = requireAuth(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
   const user = c.get('user')!;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
   const res = await db.prepare(`
     INSERT INTO entries (fy, date, kind, vendor, item_type, qty, rate, amount, note, is_challan, created_by)
     VALUES (?, ?, 'purchase', ?, ?, ?, ?, ?, ?, 0, ?)
-  `).bind(fy, b.date, b.vendor, b.item_type || null, b.qty || null, b.rate || null, parseFloat(b.amount || 0), b.note || null, user.username).run();
+  `).bind(fy, b.date, b.vendor, b.itemType || b.item_type || null, b.qty || null, b.rate || null, parseFloat(b.amount || 0), b.note || null, user.username).run();
 
-  const billId = res.meta?.last_row_id;
-  if (billId && Array.isArray(b.supply_ids)) {
-    for (const sid of b.supply_ids) {
+  let billId = res.meta?.last_row_id;
+  if (!billId) {
+    const row = await db.prepare('SELECT last_insert_rowid() AS id').first<{ id: number }>();
+    billId = row?.id;
+  }
+
+  const supplyIds = b.supply_ids || b.supplyIds || [];
+  if (billId && Array.isArray(supplyIds)) {
+    for (const sid of supplyIds) {
       await db.prepare('UPDATE entries SET billed_under_id = ? WHERE id = ? AND fy = ?').bind(billId, sid, fy).run();
     }
   }
@@ -1276,7 +1543,7 @@ app.get('/api/settings', async (c) => {
 app.post('/api/settings/opening-cash', async (c) => {
   const check = requireAdmin(c); if (check) return check;
   const fy = c.get('user')?.fy || '2026-27';
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
@@ -1284,6 +1551,23 @@ app.post('/api/settings/opening-cash', async (c) => {
     .bind(fy, 'opening_cash_balance', String(b.amount || 0)).run();
   await db.prepare('INSERT OR REPLACE INTO settings (fy, key, value) VALUES (?, ?, ?)')
     .bind(fy, 'opening_cash_date', String(b.date || '')).run();
+
+  return c.json({ ok: true });
+});
+
+app.post('/api/settings/opening-bank', async (c) => {
+  const check = requireAdmin(c); if (check) return check;
+  const fy = c.get('user')?.fy || '2026-27';
+  const b = await c.req.json().catch(() => ({}));
+  const db = getD1(c);
+  if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  const accountId = parseInt(b.accountId || b.account_id || 1, 10);
+  const amt = parseFloat(b.amount || 0);
+  const date = b.date || null;
+
+  await db.prepare('UPDATE bank_accounts SET opening_balance = ?, opening_date = ? WHERE id = ? AND fy = ?')
+    .bind(amt, date, accountId, fy).run();
 
   return c.json({ ok: true });
 });
@@ -1349,6 +1633,10 @@ app.get('/api/vendor-adjustment-types', (c) => {
   return c.json(['Discount Received', 'Round Off', 'Quality Claim', 'TDS', 'Rate Difference']);
 });
 
+app.get('/api/bank-transaction-types', (c) => {
+  return c.json(['Bank Charges', 'Interest Earned', 'Owner Capital', 'Cheque Bounce Reversal', 'Loan', 'Tax Payment']);
+});
+
 // Users Management
 app.get('/api/users', async (c) => {
   const check = requireAdmin(c); if (check) return check;
@@ -1364,7 +1652,7 @@ app.get('/api/users', async (c) => {
 
 app.post('/api/users', async (c) => {
   const check = requireAdmin(c); if (check) return check;
-  const b = await c.req.json();
+  const b = await c.req.json().catch(() => ({}));
   const db = getD1(c);
   if (!db) return c.json({ error: 'Database not bound' }, 500);
 
@@ -1406,6 +1694,48 @@ app.get('/api/summary', async (c) => {
     });
   } catch {
     return c.json({ total_sales: 0, total_purchases: 0, total_expenses: 0, fy });
+  }
+});
+
+// Backup & Restore
+app.get('/api/backup', async (c) => {
+  const check = requireAdmin(c); if (check) return check;
+  const fy = c.get('user')?.fy || '2026-27';
+  const db = getD1(c);
+  if (!db) return c.json({ error: 'Database not bound' }, 500);
+
+  try {
+    const [entriesRes, paymentsRes, advancesRes, vAdvRes, cAdjRes, vAdjRes, bankTxRes, bankAccRes, itemsRes, prodRes, setRes] = await Promise.all([
+      db.prepare('SELECT * FROM entries WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM payments WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM advances WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM vendor_advances WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM client_adjustments WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM vendor_adjustments WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM bank_transactions WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM bank_accounts WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM items WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM production_runs WHERE fy = ?').bind(fy).all<any>(),
+      db.prepare('SELECT * FROM settings WHERE fy = ?').bind(fy).all<any>()
+    ]);
+
+    return c.json({
+      exported_at: new Date().toISOString(),
+      fy,
+      entries: entriesRes.results || [],
+      payments: paymentsRes.results || [],
+      advances: advancesRes.results || [],
+      vendor_advances: vAdvRes.results || [],
+      client_adjustments: cAdjRes.results || [],
+      vendor_adjustments: vAdjRes.results || [],
+      bank_transactions: bankTxRes.results || [],
+      bank_accounts: bankAccRes.results || [],
+      items: itemsRes.results || [],
+      production_runs: prodRes.results || [],
+      settings: setRes.results || []
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Backup failed' }, 500);
   }
 });
 
